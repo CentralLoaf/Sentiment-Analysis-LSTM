@@ -9,10 +9,9 @@ import numpy as np
         
 # (Using torch.nn) Define the model architecture
 class SentimentLSTM(nn.Module):
-    def __init__(self, embedding_dim: int = 300):
+    def __init__(self, vocab_size: int, embedding_dim: int = 300):
         
         super().__init__()
-        vocab_size = self.prep_data()
         
         # Word embedding layer
         self.embedding = nn.Embedding(num_embeddings=vocab_size, 
@@ -30,33 +29,6 @@ class SentimentLSTM(nn.Module):
         
         # Using sigmoid for binary classification
         self.activation = nn.Sigmoid()
-        
-    
-    # Load, tokenize and divide the data from the IMDb movie ratings dataset
-    def prep_data(self, batch_size: int = 64, sample: bool = False):
-        loaded_data = load_dataset('imdb', split={'train': 'train', 'test': 'test'})
-        self.vocab_size = 0
-        
-        # Use BERT tokenizer to split text samples for training
-        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-        self.vocab_size = tokenizer.vocab_size
-        # Define the tokenization of each batch
-        self.token_func = lambda sample: tokenizer(sample['text'], padding='max_length', truncation=True, max_length=512)
-        # Batch data and apply tokenization function
-        self.data = loaded_data.map(self.token_func, batched=True, batch_size=batch_size)
-        # Convert dataset to PyTorch-friendly
-        self.data.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label'])
-            
-        # Differenciate train v test
-        train, test = self.data['train'], self.data['test']
-        
-        # Batchify using DataLoader
-        self.train_ = DataLoader(train, batch_size=batch_size, shuffle=True)
-        self.test_ = DataLoader(test, batch_size=batch_size, shuffle=True)
-            
-        if sample:
-            print(next(iter(self.train_)))
-        return tokenizer.vocab_size
     
     
     # Pass a sentence through the network
@@ -71,7 +43,7 @@ class SentimentLSTM(nn.Module):
         return self.activation(self.dense(hidden[-1])).squeeze(dim=1)
     
     
-    def train(self, lr: int = 1e-3, epochs: int = 1000):
+    def train(self, train_: torch.Tensor, lr: int = 1e-3, epochs: int = 1000):
         
         # Create LSTM object
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -86,7 +58,7 @@ class SentimentLSTM(nn.Module):
         for epoch in range(epochs):
             total_loss, correct, total = 0, 0, 0
             
-            for batch in self.train_:
+            for batch in train_:
                 optimizer.zero_grad()
                 
                 # Forward / backward passes
@@ -106,12 +78,10 @@ class SentimentLSTM(nn.Module):
             if losses.min() == total_loss:
                 torch.save(self.state_dict(), 'sentiment_lstm.pth')
                 saved = True
-            print(f'Epoch #{epoch+1} - Loss: {total_loss / len(self.train_)} - Accuracy: {correct / total} - Saved: {saved}')
+            print(f'Epoch #{epoch+1} - Loss: {total_loss / len(train_)} - Accuracy: {correct / total} - Saved: {saved}')
         
         
-    def __call__(self, text: str):
-        device = next(self.parameters()).device
-        
+    def __call__(self, text: str):        
         # Tokenize the text prior to feeding it into .forward()
         tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
         tokens = tokenizer(text, padding='max_length', truncation=True, max_length=512, return_tensors="pt")
@@ -119,11 +89,36 @@ class SentimentLSTM(nn.Module):
         return super().__call__(tokens['input_ids'], tokens['attention_mask'])
     
     
+BATCH_SIZE = 64
+EPOCHS = 1000
+LR = 1e-3
+    
+    
 def main():
-    print(f'GPU Available: {torch.cuda.is_available()}\nCUDA Version Installed: {torch.version.cuda}\ncuDNN Installed: {torch.backends.cudnn.version()}\nGPU Cores Available: {torch.cuda.device_count()}\nDevice Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"}')
-    model = SentimentLSTM(embedding_dim=300)
-    model.prep_data(batch_size=64, sample=False)
-    model.train(lr=1e-3, epochs=1000)
+    print('Start')
+    loaded_data = load_dataset('imdb', split={'train': 'train', 'test': 'test'})
+    vocab_size = 0
+    
+    # Use BERT tokenizer to split text samples for training
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    vocab_size = tokenizer.vocab_size
+    # Define the tokenization of each batch
+    token_func = lambda sample: tokenizer(sample['text'], padding='max_length', truncation=True, max_length=512)
+    # Batch data and apply tokenization function
+    data = loaded_data.map(token_func, batched=True, batch_size=BATCH_SIZE)
+    # Convert dataset to PyTorch-friendly
+    data.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label'])
+        
+    # Differenciate train v. test
+    train, test = data['train'], data['test']
+    
+    # Batchify using DataLoader
+    train = DataLoader(train, batch_size=BATCH_SIZE, shuffle=True)
+    test = DataLoader(test, batch_size=BATCH_SIZE, shuffle=True)
+    
+    print(f'GPU Available: {torch.cuda.is_available()}\nCUDA Version Installed: {torch.version.cuda}\ncuDNN Installed: {torch.backends.cudnn.version()}\nGPU Cores Available: {torch.cuda.device_count()}\nDevice Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"}\nVocab Size: {vocab_size}')
+    model = SentimentLSTM(vocab_size=vocab_size, embedding_dim=300)
+    model.train(train_=train, lr=LR, epochs=EPOCHS)
    
 if __name__ == '__main__':
     main()
